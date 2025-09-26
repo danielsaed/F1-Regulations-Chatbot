@@ -4,7 +4,8 @@ import json
 from dotenv import load_dotenv
 
 # --- Importaciones para FastAPI y Pydantic ---
-from fastapi import FastAPI, HTTPException, Security
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
@@ -103,6 +104,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- NUEVO: Lógica de Seguridad de API Key ---
+API_KEY_NAME = "X-API-Key" # El nombre estándar para el encabezado de la clave
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# Esta es la función "portero". Se ejecutará antes que nada en cada petición.
+async def get_api_key(api_key: str = Security(api_key_header)):
+    """Valida la clave de API enviada en el encabezado de la petición."""
+    # Compara la clave recibida con la que tienes guardada de forma segura en Azure
+    if api_key == os.getenv("BACKEND_API_KEY"):
+        return api_key
+    else:
+        # Si no coincide, detiene la petición inmediatamente con un error.
+        raise HTTPException(
+            status_code=403, detail="Could not validate credentials"
+        )
+
 # ==============================================================================
 # 4. FUNCIONES DE LÓGICA DEL CHATBOT (ADAPTADAS)
 # ==============================================================================
@@ -161,7 +178,7 @@ def get_llm_response(prompt: str) -> str:
 # ==============================================================================
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key)):
     """
     Recibe una pregunta y el historial, y devuelve una respuesta con la lógica RAG completa.
     """
