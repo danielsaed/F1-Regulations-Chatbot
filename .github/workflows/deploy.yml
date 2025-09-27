@@ -28,5 +28,5 @@ jobs:
       uses: azure/container-apps-deploy-action@v1
       with:
         resourceGroup: 'f1-chatbot-rg' # El nombre de tu grupo de recursos
-        containerAppName: 'f1-regulations-ca' # El nombre de tu Container App
+        containerAppName: 'f1-chatbot-ca' # El nombre de tu Container App
         imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/f1-chatbot-backend:latest
