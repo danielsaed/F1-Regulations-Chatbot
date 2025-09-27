@@ -125,25 +125,71 @@ async def get_api_key(api_key: str = Security(api_key_header)):
 # ==============================================================================
 
 def rephrase_query_with_history(user_query: str, chat_history: List[ChatMessage]) -> str:
+    """
+    Usa el historial para convertir una pregunta de seguimiento en una pregunta independiente.
+    """
     if not chat_history:
         return user_query
+
     history_str = "\n".join([f"{msg.role}: {msg.content}" for msg in chat_history])
-    rephrasing_prompt = f"""Based on the chat history below, rephrase the "Follow Up Question" to be a self-contained, standalone question in English...""" # Tu prompt completo aquí
+
+    # --- PROMPT MEJORADO ---
+    rephrasing_prompt = f"""
+    You are an AI assistant. Your task is to rephrase a follow-up question to be a standalone question, based on a provided chat history.
+    The new question must be in English, self-contained, and fully understandable without the context of the chat history.
+    If the follow-up question is already a standalone question, simply return it as is.
+
+    ---
+    CHAT HISTORY:
+    {history_str}
+    ---
+    FOLLOW UP QUESTION: "{user_query}"
+    ---
+    STANDALONE QUESTION:
+    """
     
-    response = azure_openai_client.chat.completions.create(
-        model=CHEAP_DEPLOYMENT_NAME,
-        messages=[{"role": "user", "content": rephrasing_prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content
+    try:
+        response = azure_openai_client.chat.completions.create(
+            # Usa un modelo rápido y barato para esta tarea interna. gpt-3.5-turbo es perfecto.
+            model=CHEAP_DEPLOYMENT_NAME, 
+            messages=[{"role": "user", "content": rephrasing_prompt}],
+            temperature=0  # Queremos 0 creatividad, solo precisión.
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error al reescribir la pregunta: {e}")
+        return user_query # Si falla, es más seguro devolver la pregunta original
 
 def generate_alternative_queries(user_query: str) -> List[str]:
-    # ... (Tu función completa aquí, usando azure_openai_client)
-    generation_prompt = f"""You are a helpful AI assistant..."""
-    response = azure_openai_client.chat.completions.create(model=CHEAP_DEPLOYMENT_NAME, messages=[{"role": "user", "content": generation_prompt}], temperature=0.5, n=1)
-    generated_text = response.choices[0].message.content
-    alternative_queries = [q.strip() for q in generated_text.strip().split('\n') if q.strip()]
-    return [user_query] + alternative_queries
+    """
+    Usa un LLM para generar 2 versiones alternativas de la pregunta del usuario.
+    """
+    # --- PROMPT MEJORADO ---
+    generation_prompt = f"""
+    You are an expert in Formula 1 and search systems. Your task is to generate 2 alternative versions of the given user question.
+    The goal is to improve the retrieval of relevant documents from a vector database that contains the official F1 regulations.
+    The alternative questions should cover related concepts and use technical synonyms.
+
+    Provide only the alternative questions, each on a new line. Do not number them.
+
+    Original question: "{user_query}"
+
+    Alternative questions:
+    """
+    
+    try:
+        response = azure_openai_client.chat.completions.create(
+            model=CHEAP_DEPLOYMENT_NAME,
+            messages=[{"role": "user", "content": generation_prompt}],
+            temperature=0.5, # Un poco de creatividad para que piense en sinónimos.
+            n=1
+        )
+        generated_text = response.choices[0].message.content
+        alternative_queries = [q.strip() for q in generated_text.strip().split('\n') if q.strip()]
+        return [user_query] + alternative_queries
+    except Exception as e:
+        print(f"Error al generar preguntas alternativas: {e}")
+        return [user_query]
 
 def find_relevant_chunks(user_query: str, top_k: int = 4) -> dict:
     # ¡CAMBIO CLAVE! Usamos Azure OpenAI para crear el embedding.
@@ -161,14 +207,39 @@ def chunks_to_article(results_metadata: List[Dict]) -> List[str]:
     return [dic_database.get(x, "") for x in lst_articles_titles]
 
 def build_prompt(user_query: str, context_articles: List[str]) -> str:
-    # ... (Tu función completa aquí)
+    """
+    Construye el prompt final para el LLM, combinando la pregunta y el contexto.
+    """
     context = "\n\n---\n\n".join(context_articles)
-    return f"""You are an expert assistant for Formula 1 regulations... CONTEXT: {context} QUESTION: {user_query} ..."""
+
+    # --- PROMPT MEJORADO Y ESTRUCTURADO ---
+    prompt = f"""
+    You are a world-class expert assistant on Formula 1 regulations, your name is "Reggie".
+    Your task is to answer the user's question with utmost precision, based ONLY on the provided context from the official regulations.
+
+    CONTEXT FROM THE OFFICIAL REGULATIONS:
+    ---
+    {context}
+    ---
+
+    USER'S QUESTION:
+    "{user_query}"
+
+    YOUR INSTRUCTIONS:
+    1.  **Analyze the Context:** Read the provided context carefully to find the answer.
+    2.  **Answer the Question:** Formulate a clear, structured, and easy-to-understand answer. Use bullet points or numbered lists if it improves clarity, especially for procedures or lists of rules.
+    3.  **Grounding is CRITICAL:** Your answer MUST be based exclusively on the information within the provided CONTEXT. Do not use any external knowledge.
+    4.  **Cite Your Sources:** After providing a piece of information, you MUST cite the specific article number it came from. Use the format `[Source: DOCUMENT NAME - Article X.Y]`.
+    5.  **Handle Missing Information:** If the answer cannot be found in the provided context, you MUST respond with the exact phrase: "Sorry, I could not find a definitive answer for this in the official documents provided. I work best with especific questions, please try again!"
+
+    ANSWER:
+    """
+    return prompt
 
 def get_llm_response(prompt: str) -> str:
     # Usa el cliente de Azure OpenAI para la respuesta final
     response = azure_openai_client.chat.completions.create(
-        model=CHEAP_DEPLOYMENT_NAME,
+        model=NORMAL_DEPLOYMENT_NAME,
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content
