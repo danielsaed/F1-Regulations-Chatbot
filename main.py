@@ -31,7 +31,7 @@ try:
     )
     EMBEDDING_DEPLOYMENT_NAME = "f1-embeddings" 
     CHEAP_DEPLOYMENT_NAME = "gpt-35-turbo"
-    NORMAL_DEPLOYMENT_NAME = "gpt-5-mini"
+    NORMAL_DEPLOYMENT_NAME = "gpt-5-nano"
     print("Cliente de Azure OpenAI configurado correctamente.")
 except Exception as e:
     print(f"ERROR: No se pudo configurar el cliente de Azure OpenAI. Revisa tus variables de entorno. Error: {e}")
@@ -151,7 +151,7 @@ def rephrase_query_with_history(user_query: str, chat_history: List[ChatMessage]
     try:
         response = azure_openai_client.chat.completions.create(
             # Usa un modelo rápido y barato para esta tarea interna. gpt-3.5-turbo es perfecto.
-            model=CHEAP_DEPLOYMENT_NAME, 
+            model=NORMAL_DEPLOYMENT_NAME, 
             messages=[{"role": "user", "content": rephrasing_prompt}],
             temperature=0  # Queremos 0 creatividad, solo precisión.
         )
@@ -179,7 +179,7 @@ def generate_alternative_queries(user_query: str) -> List[str]:
     
     try:
         response = azure_openai_client.chat.completions.create(
-            model=CHEAP_DEPLOYMENT_NAME,
+            model=NORMAL_DEPLOYMENT_NAME,
             messages=[{"role": "user", "content": generation_prompt}],
             temperature=0.5, # Un poco de creatividad para que piense en sinónimos.
             n=1
@@ -240,7 +240,8 @@ def get_llm_response(prompt: str) -> str:
     # Usa el cliente de Azure OpenAI para la respuesta final
     response = azure_openai_client.chat.completions.create(
         model=NORMAL_DEPLOYMENT_NAME,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=10000,
     )
     return response.choices[0].message.content
 
