@@ -1,4 +1,4 @@
-name: Build and Deploy to Azure
+name: Build and Deploy to Azure Container Apps
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -16,6 +17,16 @@ jobs:
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Build and push Docker image to Azure Container Registry
+    - name: Log in to Azure Container Registry
+      run: az acr login --name ${{ secrets.ACR_NAME }}
+
+    - name: Build and push Docker image to ACR
       run: |
         az acr build --registry ${{ secrets.ACR_NAME }} --image f1-chatbot-backend:latest .
+
+    - name: Deploy to Azure Container Apps
+      uses: azure/container-apps-deploy-action@v1
+      with:
+        resourceGroup: 'f1-chatbot-rg' # El nombre de tu grupo de recursos
+        containerAppName: 'f1-regulations-ca' # El nombre de tu Container App
+        imageToDeploy: ${{ secrets.ACR_NAME }}.azurecr.io/f1-chatbot-backend:latest
