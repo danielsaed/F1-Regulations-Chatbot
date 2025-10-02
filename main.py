@@ -177,8 +177,9 @@ def generate_alternative_queries(user_query: str) -> List[str]:
     """
     # --- PROMPT MEJORADO ---
     generation_prompt = f"""
-    You are an expert in Formula 1 and search systems. Your task is to generate 1 alternative versions of the given user question.
+    You are an expert in Formula 1 and search systems. Your task is to generate 2 alternative versions of the given user question in english.
     The goal is to improve the retrieval of relevant documents from a vector database that contains the official F1 regulations.
+    Assosiate all terms with F1 or motorsport.
     The alternative questions should cover related concepts and use technical synonyms.
 
     Provide only the alternative questions, each on a new line. Do not number them.
@@ -202,7 +203,7 @@ def generate_alternative_queries(user_query: str) -> List[str]:
         print(f"Error al generar preguntas alternativas: {e}")
         return [user_query]
 
-def find_relevant_chunks(user_query: str, top_k: int = 3) -> dict:
+def find_relevant_chunks(user_query: str, top_k: int = 6) -> dict:
     # ¡CAMBIO CLAVE! Usamos Azure OpenAI para crear el embedding.
     query_embedding_result = azure_openai_client.embeddings.create(input=[user_query], model=EMBEDDING_DEPLOYMENT_NAME)
     query_embedding = query_embedding_result.data[0].embedding
@@ -242,8 +243,9 @@ def build_prompt(user_query: str, context_articles: List[str]) -> str:
 
     # --- PROMPT MEJORADO Y ESTRUCTURADO ---
     prompt = f"""
-    You are a world-class expert assistant on Formula 1 regulations, your name is "Reggie".
-    Your task is to answer the user's question with utmost precision, based ONLY on the provided context from the official regulations.
+    You are a world-class F1 steward assistant, expert on Formula 1 regulations.
+    Your persona is professional, precise, and objective, like a race steward.
+    Your mission is to provide clear, accurate, and concise answers to questions about the regulations, based exclusively on the official documents provided as context.
 
     CONTEXT FROM THE OFFICIAL REGULATIONS:
     ---
@@ -253,14 +255,50 @@ def build_prompt(user_query: str, context_articles: List[str]) -> str:
     USER'S QUESTION:
     "{user_query}"
 
-    YOUR INSTRUCTIONS:
-    1.  **Analyze the Context:** Read the provided context carefully to find the answer.
-    2.  **Answer the Question:** Formulate a clear, structured, and easy-to-understand answer. Use bullet points or numbered lists if it improves clarity, especially for procedures or lists of rules.
-    3.  **Grounding is CRITICAL:** Your answer MUST be based exclusively on the information within the provided CONTEXT. Do not use any external knowledge.
-    4.  **Cite Your Sources:** After providing a piece of information, you MUST cite the specific article number it came from. Use the format `[Source: DOCUMENT NAME - Article X.Y]`.
-    5.  **Handle Missing Information:** If the answer cannot be found in the provided context, you MUST respond with the exact phrase: "Sorry, I could not find a definitive answer for this in the official documents provided. I work best with especific questions, please try again!"
+    YOUR INSTRUCTIONS (Follow these rules strictly):
+    1.  **Context** Extract the document names and article numbers directly from the provided context.
 
-    ANSWER:
+    2.  **Be Concise:** Answer the user's question directly but if it is necesary add extra information, commentary, or elaborate beyond what is necessary to answer if only if the question is vague.
+
+    3.  **Inline Citations:** After each distinct paragraph, you MUST cite the specific source article it came from. Use the exact format: `[Source: **DOCUMENT NAME (short the name, example: Formula One Regulations = F1 Regulations, Internationa Sporting Code = International Sport. Code, with only capitalizing first letters)** (Art X.Y)]|`.
+
+    4.  **Structured Formatting:** You MUST use proper Markdown formatting for maximum readability:
+        - Use headings (`## `) for main sections if the answer has multiple parts
+        - Use bullet points (`- `) for lists of items, rules, or key points
+        - Use numbered lists (`1. `, `2. `) for step-by-step procedures or ordered sequences
+        - Use bold text (`**key terms**`) to highlight important concepts, penalties, or definitions
+        - Use double line breaks (`\\n\\n`) to separate paragraphs properly
+        - Citations should be on their own line after content, preceded by a double line break
+
+        FORMATTING EXAMPLE:
+        ```
+        ## Overview of the F1 Points System
+
+        The Formula One World Championship driver's title is awarded to the driver with the highest points accumulated from all competitions. The constructors' title is awarded to the competitor with the highest points from both cars in all competitions.
+
+        [Source: **F1 Sporting Regulations** (Article 6.1 and 6.2)]|`
+
+        ## Point Distribution
+
+        Points are awarded to the first **ten finishers** in each race according to the following scale:
+
+        - 1st place: **25 points**
+        - 2nd place: **18 points**
+        - 3rd place: **15 points**
+
+        [Source: **F1 Sporting Regulations** (Art 6.3)]|
+        ```
+
+    5.  **Strictly Grounding:** Your entire answer MUST be based exclusively on the information within the provided CONTEXT. Do not infer, guess, or use any external knowledge.
+
+    6.  **Handle Missing Information:** If the answer is not in the CONTEXT, you MUST respond with the exact phrase: "Sorry, I could not find a definitive answer for this in the official documents provided. I work best with specific questions, please try again!"
+
+    7.  **Line Break Rules:** 
+        - Always use double line breaks (\\n\\n) between paragraphs
+        - Put citations on separate lines
+        - Ensure proper spacing around headings and lists
+
+    FINAL ANSWER (in properly formatted Markdown):
     """
     return prompt
 
@@ -367,8 +405,16 @@ async def get_llm_response_stream(prompt: str):
                                     
                                     # Enviar cuando tengamos un chunk significativo
                                     if should_send_chunk(buffer):
-                                        yield f"data: {buffer}\n\n"
-                                        buffer = ""
+                                        semicolon_pos = buffer.find("|")
+                                        if semicolon_pos != -1:
+                                            yield f"data: {buffer[:semicolon_pos + 1]}"
+                                            print(r"data: " + buffer[:semicolon_pos + 1] + "\\n\\n")
+                                            buffer = buffer[semicolon_pos + 1:]
+                                            
+                                        else:
+                                            print(f"data: {buffer}")
+                                            yield f"data: {buffer}"
+                                            buffer = ""
                                         
                         except json.JSONDecodeError:
                             continue
@@ -385,15 +431,11 @@ def should_send_chunk(buffer: str) -> bool:
     Determina si debemos enviar el chunk actual basado en delimitadores naturales.
     """
     # Enviar si termina en punto, punto y coma, dos puntos, o salto de línea
-    if buffer.endswith(('.', ';', ':', '\n', '!', '?')):
-        return True
-    
-    # Enviar si termina un elemento de lista markdown
-    if buffer.strip().endswith(')') and any(buffer.strip().startswith(prefix) for prefix in ['1.', '2.', '3.', '4.', '5.', '-', '*']):
+    if buffer.find('|') !=-1:
         return True
     
     # Enviar si el buffer es muy largo (fallback)
-    if len(buffer) > 100:
+    if len(buffer) > 30000:
         return True
         
     return False
@@ -439,15 +481,28 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
             return StreamingResponse(error_stream(), media_type="text/plain")
         
         full_context_articles = chunks_to_article(all_results_metadata)
-
-        print(full_context_articles)
+        
         print(f"Retrieved {len(full_context_articles)} articles")
         
         # 5. Construir el prompt
         prompt = build_prompt(standalone_query, full_context_articles)
         
-        # 6. Devolver respuesta streaming
-        return StreamingResponse(get_llm_response_stream(prompt), media_type="text/plain")
+        # 6. Crear generador que incluye fuentes al final
+        async def chat_stream_with_sources():
+            # Primero enviar el contenido streaming normal
+            async for chunk in get_llm_response_stream(prompt):
+                if chunk.strip() == "data: [DONE]":
+                    # Antes de terminar, enviar las fuentes
+                    sources_data = prepare_sources_data(unique_metadata)
+                    if sources_data:
+                        sources_json = json.dumps(sources_data)
+                        yield f"data: [SOURCES]{sources_json}[/SOURCES]\n\n"
+                    yield chunk  # Enviar [DONE] al final
+                    break
+                else:
+                    yield chunk
+        
+        return StreamingResponse(chat_stream_with_sources(), media_type="text/plain")
         
     except HTTPException:
         raise
@@ -460,6 +515,57 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
             yield "data: [DONE]\n\n"
         
         return StreamingResponse(error_stream(), media_type="text/plain")
+
+def prepare_sources_data(metadata_list: List[Dict]) -> List[Dict]:
+    """
+    Prepara los datos de las fuentes para enviar al frontend, agrupados por fuente.
+    """
+    # Diccionario para agrupar por fuente
+    sources_grouped = {}
+    
+    for metadata in metadata_list:
+        source = metadata.get('source', '')
+        article_title = metadata.get('article_title', '')
+        article_number = metadata.get('article_number', '')
+        
+        # Extraer el número del artículo padre (ej: "1.1" -> "1", "4.5.2" -> "4")
+        parent_article = article_number.split('.')[0] if article_number else ''
+        
+        # Crear nombre corto para la fuente
+        short_source = source.replace("FORMULA ONE SPORTING REGULATIONS", "F1 Sporting Regulations") \
+                           .replace("INTERNATIONAL SPORTING CODE", "International Sporting Code")
+        
+        # Inicializar el grupo si no existe
+        if short_source not in sources_grouped:
+            sources_grouped[short_source] = {
+                "source": short_source,
+                "articles": {}
+            }
+        
+        # Agregar artículo padre sin duplicados
+        if parent_article and parent_article not in sources_grouped[short_source]["articles"]:
+            # Obtener el texto completo del artículo padre
+            db_key = f"{source}-{article_title}"
+            full_text = dic_database.get(db_key, "")
+            
+            sources_grouped[short_source]["articles"][parent_article] = {
+                "article_number": parent_article,
+                "article_title": article_title,
+                "full_text": full_text
+            }
+    
+    # Convertir a lista con el formato requerido
+    result = []
+    for source_name, source_data in sources_grouped.items():
+        articles_list = list(source_data["articles"].values())
+        if articles_list:  # Solo incluir fuentes que tengan artículos
+            result.append({
+                "id": f"source-{len(result)}",
+                "source_name": source_name,
+                "articles": articles_list
+            })
+    
+    return result
 
 # ==============================================================================
 # 6. (Opcional) Un endpoint de "salud" para verificar que la API está viva
