@@ -112,7 +112,13 @@ app = FastAPI(
 # Esto es crucial para permitir que tu frontend (en otro dominio) se comunique con esta API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # En producción, deberías restringirlo a la URL de tu frontend.
+    allow_origins=[
+        "http://localhost:8501",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://f1regulations.vercel.app",  # Agrega tu dominio de Vercel
+        "https://*.vercel.app",  # Permitir todos los subdominios de Vercel
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
