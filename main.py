@@ -443,7 +443,7 @@ def should_send_chunk(buffer: str) -> bool:
         return True
     
     # Enviar si el buffer es muy largo (fallback)
-    if len(buffer) > 30000:
+    if len(buffer) > 50000:
         return True
         
     return False
@@ -512,7 +512,8 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
                     sources_data = prepare_sources_data(unique_metadata, full_response_text)
                     if sources_data:
                         sources_json = json.dumps(sources_data)
-                        yield f"data: [SOURCES]{sources_json}[/SOURCES]\n\n"
+                        clean_sources_json = sources_json.replace("|", "")
+                        yield f"data: [SOURCES]{clean_sources_json}[/SOURCES]\n\n"
                     yield chunk  # Enviar [DONE] al final
                     break
                 else:
