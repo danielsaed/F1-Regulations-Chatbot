@@ -64,8 +64,10 @@ except Exception as e:
 def load_parent_documents():
     db = {}
     sources_to_process = {
-        "json/FORMULA ONE SPORTING REGULATIONS.json": "FORMULA ONE SPORTING REGULATIONS",
-        "json/INTERNATIONAL SPORTING CODE.json": "INTERNATIONAL SPORTING CODE"
+    "json/FORMULA ONE SPORTING REGULATIONS.json": "FORMULA ONE SPORTING REGULATIONS",
+    "json/INTERNATIONAL SPORTING CODE.json": "INTERNATIONAL SPORTING CODE",
+    "json/APPENDIX L CHAPTER III DRIVERS EQUIPMENT.json": "APPENDIX L CHAPTER III - DRIVERS EQUIPMENT",
+    "json/APPENDIX L CHAPTER IV CODE OF DRIVING CONDUCT ON CIRCUITS.json": "APPENDIX L CHAPTER IV CODE OF DRIVING CONDUCT ON CIRCUITS"
     }
     for file_path, source_name in sources_to_process.items():
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -179,7 +181,7 @@ def generate_alternative_queries(user_query: str) -> List[str]:
     generation_prompt = f"""
     You are an expert in Formula 1 and search systems. Your task is to generate 2 alternative versions of the given user question in english.
     The goal is to improve the retrieval of relevant documents from a vector database that contains the official F1 regulations.
-    Assosiate all terms with F1 or motorsport.
+    Assosiate all terms with F1 or motorsport, if there is not an f1 session especified in the original question, please refer to all sessions in the alternatives querys, example: Free practices (FP1,FP2,FP3), Qualy ,Sprint Qualy, Race, Sprint Race.
     The alternative questions should cover related concepts and use technical synonyms.
 
     Provide only the alternative questions, each on a new line. Do not number them.
@@ -203,7 +205,7 @@ def generate_alternative_queries(user_query: str) -> List[str]:
         print(f"Error al generar preguntas alternativas: {e}")
         return [user_query]
 
-def find_relevant_chunks(user_query: str, top_k: int = 6) -> dict:
+def find_relevant_chunks(user_query: str, top_k: int = 4) -> dict:
     # ¡CAMBIO CLAVE! Usamos Azure OpenAI para crear el embedding.
     query_embedding_result = azure_openai_client.embeddings.create(input=[user_query], model=EMBEDDING_DEPLOYMENT_NAME)
     query_embedding = query_embedding_result.data[0].embedding
@@ -227,11 +229,11 @@ def chunks_to_article(results_metadata: List[Dict]) -> List[str]:
             seen.add(item)
     lst_context = []
     dic_full_articles = {}
-    for x in list(duplicates):
+
+    for x in list(seen):
         x_temp = x.split("-")
         lst_context.append("Source = "+x_temp[0]+", Article = " + x_temp[2]+") " + x_temp[1] + " : "+dic_database.get(x_temp[0]+"-"+x_temp[1], ""))
         dic_full_articles["Source = "+x_temp[0]+", Article = " + x_temp[2]+") " + x_temp[1]] = lst_context[-1].split(":",1)
-
 
     return lst_context
 
@@ -258,9 +260,9 @@ def build_prompt(user_query: str, context_articles: List[str]) -> str:
     YOUR INSTRUCTIONS (Follow these rules strictly):
     1.  **Context** Extract the document names and article numbers directly from the provided context.
 
-    2.  **Be Concise:** Answer the user's question directly but if it is necesary add extra information, commentary, or elaborate beyond what is necessary to answer if only if the question is vague.
+    2.  **Be Concise:** Answer the user's question directly but if it is necesary add extra information, commentary, or elaborate beyond what is necessary to answer if only if the question is vague, if there is not a session especified in the question, refer the question to all the session (Free practices, Qualy, Sprints, Races).
 
-    3.  **Inline Citations:** After each distinct paragraph, you MUST cite the specific source article it came from. Use the exact format: `[Source: **DOCUMENT NAME (short the name, example: Formula One Regulations = F1 Regulations, Internationa Sporting Code = International Sport. Code, with only capitalizing first letters)** (Art X.Y)]|`.
+    3.  **Inline Citations:** After each distinct paragraph, you MUST cite the specific source article it came from. Use the exact format: `[Source: **DOCUMENT NAME (short the name, example: Formula One Regulations = F1 Regulations, Internationa Sporting Code = International Sport. Code, with only capitalizing first letters)** (Art X.Y)]|` if the ir 2 or more sources just do `[Source: **DOCUMENT NAME** (Art X.Y) -  Source: **DOCUMENT NAME** (Art X.Y)]|`. ( APPENDIX L CHAPTER III - DRIVERS EQUIPMENT", "Appendix L, Chapter III) - (APPENDIX L CHAPTER IV CODE OF DRIVING CONDUCT ON CIRCUITS", "Appendix L CHAPTER IV")
 
     4.  **Structured Formatting:** You MUST use proper Markdown formatting for maximum readability:
         - Use headings (`## `) for main sections if the answer has multiple parts
@@ -291,7 +293,7 @@ def build_prompt(user_query: str, context_articles: List[str]) -> str:
 
     5.  **Strictly Grounding:** Your entire answer MUST be based exclusively on the information within the provided CONTEXT. Do not infer, guess, or use any external knowledge.
 
-    6.  **Handle Missing Information:** If the answer is not in the CONTEXT, you MUST respond with the exact phrase: "Sorry, I could not find a definitive answer for this in the official documents provided. I work best with specific questions, please try again!"
+    6.  **Handle Missing Information:** If the answer is not in the CONTEXT, do all the posible to try answer with what you have, be open and search alternatives but only with the context give, also reformulate a new question based of the concept of the original answer, and ask the user, this to continue the conversation, if the origanl question is not clear at all or its not motorsport related, you MUST respond with the exact phrase: "Sorry, I could not find a definitive answer for this in the official documents provided. I work best with specific questions, please try again!"
 
     7.  **Line Break Rules:** 
         - Always use double line breaks (\\n\\n) between paragraphs
@@ -408,11 +410,11 @@ async def get_llm_response_stream(prompt: str):
                                         semicolon_pos = buffer.find("|")
                                         if semicolon_pos != -1:
                                             yield f"data: {buffer[:semicolon_pos + 1]}"
-                                            print(r"data: " + buffer[:semicolon_pos + 1] + "\\n\\n")
+                                            
                                             buffer = buffer[semicolon_pos + 1:]
                                             
                                         else:
-                                            print(f"data: {buffer}")
+                                            
                                             yield f"data: {buffer}"
                                             buffer = ""
                                         
@@ -464,13 +466,18 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
         
         # 3. Buscar chunks relevantes
         all_results_metadata = []
+        all_results = []
         for q in all_queries:
             results = find_relevant_chunks(q)
+            all_results.extend(results["documents"][0])
+            print(results["metadatas"][0])
             all_results_metadata.extend(results["metadatas"][0])
         
         # 4. Eliminar duplicados y obtener el contexto completo
         unique_metadata_tuples = set(tuple(d.items()) for d in all_results_metadata)
         unique_metadata = [dict(t) for t in unique_metadata_tuples]
+
+        unique_data = list(set(all_results))  # Eliminar strings duplicados directamente
         
         if not unique_metadata:
             # Si no hay contexto, devolvemos streaming con mensaje de error
@@ -483,23 +490,30 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
         full_context_articles = chunks_to_article(all_results_metadata)
         
         print(f"Retrieved {len(full_context_articles)} articles")
+        print(unique_data)
         
         # 5. Construir el prompt
-        prompt = build_prompt(standalone_query, full_context_articles)
+        prompt = build_prompt(standalone_query, unique_data)
         
         # 6. Crear generador que incluye fuentes al final
         async def chat_stream_with_sources():
+            full_response_text = ""  # Acumular toda la respuesta
+            
             # Primero enviar el contenido streaming normal
             async for chunk in get_llm_response_stream(prompt):
                 if chunk.strip() == "data: [DONE]":
-                    # Antes de terminar, enviar las fuentes
-                    sources_data = prepare_sources_data(unique_metadata)
+                    # Antes de terminar, enviar solo las fuentes citadas
+                    sources_data = prepare_sources_data(unique_metadata, full_response_text)
                     if sources_data:
                         sources_json = json.dumps(sources_data)
                         yield f"data: [SOURCES]{sources_json}[/SOURCES]\n\n"
                     yield chunk  # Enviar [DONE] al final
                     break
                 else:
+                    # Acumular el texto para análisis
+                    if chunk.startswith("data: "):
+                        chunk_text = chunk[6:]
+                        full_response_text += chunk_text
                     yield chunk
         
         return StreamingResponse(chat_stream_with_sources(), media_type="text/plain")
@@ -507,7 +521,13 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        # Esto te dará el traceback completo con números de línea
         print(f"Error en el endpoint de chat: {str(e)}")
+        print("Traceback completo:")
+        print(traceback.format_exc())
+        
+        
         
         # Stream de error
         async def error_stream():
@@ -516,56 +536,149 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key
         
         return StreamingResponse(error_stream(), media_type="text/plain")
 
-def prepare_sources_data(metadata_list: List[Dict]) -> List[Dict]:
+
+def extract_cited_articles_from_response(response_text: str, all_metadata: List[Dict]) -> List[Dict]:
+    """
+    Extrae solo los metadatos de artículos PADRE que realmente aparecen citados en la respuesta.
+    """
+    cited_metadata = []
+    processed_articles = set()  # Para evitar duplicados
+    
+    # Buscar patrones de citas en el texto de respuesta
+    import re
+    
+    # PASO 1: Extraer todas las citas del texto
+    citation_patterns = [
+        # Formato: [Source: F1 Sporting Regulations (Art 26.1, 37.2, 37.6, 53.1, 55.4, 55.15, 59.1)]
+        r'\[Source:\s*.*?\((Art\.?\s*[\d\.,\s]+)\)\]',
+        # Formato: [Source: F1 Sporting Regulations (Article 26.1, 37.2, 37.6)]
+        r'\[Source:\s*.*?\((Article\s*[\d\.,\s]+)\)\]',
+        # Formato más general: (Art 7.1 and 7.2)
+        r'\((Art\.?\s*[\d\.\s,and]+)\)',
+        # Formato más general: (Article 7.1 and 7.2)
+        r'\((Article\s*[\d\.\s,and]+)\)',
+        # NUEVO: Formato para artículos principales: Art. 2, Art. 5, etc.
+        r'Art\.?\s*(\d+)(?!\.\d)',  # Art. 2 (pero no Art. 2.1)
+        r'Article\s*(\d+)(?!\.\d)', # Article 2 (pero no Article 2.1)
+    ]
+    
+    # Extraer todos los números de artículo citados
+    cited_article_numbers = set()
+    
+    for pattern in citation_patterns:
+        matches = re.findall(pattern, response_text, re.IGNORECASE)
+        for match in matches:
+            # Si el match es solo un número (artículos principales), agregarlo directamente
+            if isinstance(match, str) and match.isdigit():
+                cited_article_numbers.add(match)
+                print(f"Artículo principal citado encontrado: {match}")
+                continue
+            
+            # Limpiar el match y extraer números (para subarticulos)
+            clean_match = re.sub(r'^(Art\.?|Article)\s*', '', match, flags=re.IGNORECASE)
+            
+            # Dividir por comas y "and"
+            article_parts = re.split(r'[,\s]+and\s+|,\s*', clean_match)
+            
+            for part in article_parts:
+                part = part.strip()
+                if part:
+                    # Para subarticulos (ej: 26.1 -> 26)
+                    if re.match(r'^\d+(\.\d+)+$', part):
+                        parent_number = part.split('.')[0]
+                        cited_article_numbers.add(parent_number)
+                        print(f"Subarticulo citado encontrado: {part} -> padre: {parent_number}")
+                    # Para artículos principales (ej: 26 -> 26)
+                    elif re.match(r'^\d+$', part):
+                        cited_article_numbers.add(part)
+                        print(f"Artículo principal citado encontrado: {part}")
+    
+    # PASO 2: Buscar metadatos que coincidan con los artículos citados
+    for metadata in all_metadata:
+        article_number = metadata.get('article_number', '')
+        source = metadata.get('source', '')
+        article_title = metadata.get('article_title', '')
+        
+        if not article_number:
+            continue
+        
+        # Extraer número padre del metadata
+        parent_article = article_number.split('.')[0] if '.' in article_number else article_number
+        
+        # FILTRO 1: Solo si está en la lista de artículos citados
+        if parent_article not in cited_article_numbers:
+            continue
+        
+        # FILTRO 2: Evitar duplicados
+        article_key = f"{source}-{parent_article}"
+        if article_key in processed_articles:
+            continue
+        
+        cited_metadata.append(metadata)
+        processed_articles.add(article_key)
+        print(f"Metadata agregado: {source} - Art. {parent_article}")
+
+    print(f"Total artículos citados encontrados: {len(cited_metadata)}")
+    return cited_metadata
+
+def prepare_sources_data(metadata_list: List[Dict], response_text: str = "") -> List[Dict]:
     """
     Prepara los datos de las fuentes para enviar al frontend, agrupados por fuente.
+    Solo incluye artículos PADRE que están citados en la respuesta.
     """
-    # Diccionario para agrupar por fuente
-    sources_grouped = {}
+    # Si se proporciona el texto de respuesta, filtrar solo artículos citados
+    if response_text:
+        metadata_list = extract_cited_articles_from_response(response_text, metadata_list)
+    
+    sources_data = []
+    sources_dict = {}
     
     for metadata in metadata_list:
         source = metadata.get('source', '')
         article_title = metadata.get('article_title', '')
         article_number = metadata.get('article_number', '')
         
-        # Extraer el número del artículo padre (ej: "1.1" -> "1", "4.5.2" -> "4")
-        parent_article = article_number.split('.')[0] if article_number else ''
+        # Usar artículo padre para evitar duplicados
+        # CAMBIO: Manejar tanto artículos principales como subarticulos
+        if '.' in article_number:
+            parent_article = article_number.split('.')[0]  # Para subarticulos: 2.1 -> 2
+        else:
+            parent_article = article_number  # Para artículos principales: 2 -> 2
         
-        # Crear nombre corto para la fuente
-        short_source = source.replace("FORMULA ONE SPORTING REGULATIONS", "F1 Sporting Regulations") \
-                           .replace("INTERNATIONAL SPORTING CODE", "International Sporting Code")
+        # Obtener el texto completo del artículo padre
+        db_key = f"{source}-{article_title}"
+        full_text = dic_database.get(db_key, "")
         
-        # Inicializar el grupo si no existe
-        if short_source not in sources_grouped:
-            sources_grouped[short_source] = {
-                "source": short_source,
-                "articles": {}
-            }
-        
-        # Agregar artículo padre sin duplicados
-        if parent_article and parent_article not in sources_grouped[short_source]["articles"]:
-            # Obtener el texto completo del artículo padre
-            db_key = f"{source}-{article_title}"
-            full_text = dic_database.get(db_key, "")
+        if full_text:
+            # Crear nombre corto para la fuente
+            short_source = source.replace("FORMULA ONE SPORTING REGULATIONS", "F1 Regulations") \
+                               .replace("INTERNATIONAL SPORTING CODE", "International Sport. Code") \
+                               .replace("APPENDIX L CHAPTER III - DRIVERS EQUIPMENT", "Appendix L, Chapter III") \
+                               .replace("APPENDIX L CHAPTER IV CODE OF DRIVING CONDUCT ON CIRCUITS", "Appendix L CHAPTER IV")
             
-            sources_grouped[short_source]["articles"][parent_article] = {
-                "article_number": parent_article,
-                "article_title": article_title,
-                "full_text": full_text
-            }
-    
-    # Convertir a lista con el formato requerido
-    result = []
-    for source_name, source_data in sources_grouped.items():
-        articles_list = list(source_data["articles"].values())
-        if articles_list:  # Solo incluir fuentes que tengan artículos
-            result.append({
-                "id": f"source-{len(result)}",
-                "source_name": source_name,
-                "articles": articles_list
-            })
-    
-    return result
+            if short_source not in sources_dict:
+                sources_dict[short_source] = {
+                    "id": f"source-{len(sources_data)}",
+                    "source_name": short_source,
+                    "articles": []
+                }
+                sources_data.append(sources_dict[short_source])
+            
+            # Verificar que no esté duplicado en los artículos ya agregados
+            article_exists = any(
+                art["article_number"] == parent_article 
+                for art in sources_dict[short_source]["articles"]
+            )
+            
+            if not article_exists:
+                sources_dict[short_source]["articles"].append({
+                    "article_number": parent_article,
+                    "article_title": article_title,
+                    "full_text": full_text
+                })
+
+    print(f"Fuentes preparadas: {len(sources_data)} grupos")
+    return sources_data
 
 # ==============================================================================
 # 6. (Opcional) Un endpoint de "salud" para verificar que la API está viva
