@@ -443,7 +443,7 @@ def should_send_chunk(buffer: str) -> bool:
         return True
     
     # Enviar si el buffer es muy largo (fallback)
-    if len(buffer) > 50000:
+    if len(buffer) > 70000:
         return True
         
     return False
