@@ -2,6 +2,9 @@
 import os
 import json
 from dotenv import load_dotenv
+from collections import defaultdict
+from datetime import datetime, timedelta
+import threading
 
 # --- Importaciones para FastAPI y Pydantic ---
 from fastapi import FastAPI, HTTPException, Security, Depends
@@ -117,6 +120,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5173",
         "https://f1regulations.vercel.app",  # Agrega tu dominio de Vercel
+        "https://www.f1rules.com",
         "https://*.vercel.app",  # Permitir todos los subdominios de Vercel
     ],
     allow_credentials=True,
@@ -448,22 +452,91 @@ def should_send_chunk(buffer: str) -> bool:
         
     return False
 
+
+# Almacenamiento en memoria para rate limiting
+rate_limit_storage = defaultdict(list)
+storage_lock = threading.Lock()
+
+def check_rate_limit(ip_address: str, limit: int = 3, window_hours: int = 1) -> bool:
+    """
+    Rate limiting simple usando memoria.
+    - limit: número máximo de requests
+    - window_hours: ventana de tiempo en horas
+    """
+    with storage_lock:
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(hours=window_hours)
+        
+        # Limpiar requests antiguos para esta IP
+        rate_limit_storage[ip_address] = [
+            timestamp for timestamp in rate_limit_storage[ip_address] 
+            if timestamp > cutoff_time
+        ]
+        
+        # Verificar si excede el límite
+        if len(rate_limit_storage[ip_address]) >= limit:
+            return False
+        
+        # Agregar el request actual
+        rate_limit_storage[ip_address].append(current_time)
+        return True
+
+# Función para limpiar periódicamente el storage (opcional)
+def cleanup_old_entries():
+    """Limpia entradas antiguas para evitar acumulación de memoria"""
+    with storage_lock:
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(hours=24)  # Limpiar después de 24 horas
+        
+        # Limpiar IPs que no han hecho requests en las últimas 24 horas
+        keys_to_remove = []
+        for ip, timestamps in rate_limit_storage.items():
+            # Filtrar timestamps recientes
+            recent_timestamps = [ts for ts in timestamps if ts > cutoff_time]
+            if recent_timestamps:
+                rate_limit_storage[ip] = recent_timestamps
+            else:
+                keys_to_remove.append(ip)
+        
+        # Remover IPs inactivas
+        for key in keys_to_remove:
+            del rate_limit_storage[key]
+
+
 # ==============================================================================
 # 5. EL ENDPOINT PRINCIPAL DE LA API
 # ==============================================================================
 
-@app.post("/chat")  # Removemos response_model ya que es streaming
-async def chat_endpoint(request: ChatRequest, api_key: str = Depends(get_api_key)):
+from fastapi import FastAPI, HTTPException, Security, Depends, Request
+
+@app.post("/chat")
+async def chat_endpoint(request: Request, chat_request: ChatRequest, api_key: str = Depends(get_api_key)):
     """
     Recibe una pregunta y el historial, y devuelve una respuesta con streaming.
     """
     try:
+        # NUEVO: Rate limiting por IP
+        client_ip = request.client.host
+        
+        # Verificar rate limit (3 requests por hora)
+        if not check_rate_limit(client_ip, limit=3, window_hours=1):
+            # Respuesta de error con streaming para mantener consistencia
+            async def rate_limit_stream():
+                yield "data: **Rate limit exceeded** ⚠️\n\n"
+                yield "You can make a maximum of **3 questions per hour**. Please try again later.\n\n"
+                #yield "data: [DONE]\n\n"
+            
+            return StreamingResponse(rate_limit_stream(), media_type="text/plain")
+        
+        # Log del request para monitoreo
+        print(f"Request from IP {client_ip}: {chat_request.query[:50]}...")
+        
         # Valida la entrada
-        if not request.query or not request.query.strip():
+        if not chat_request.query or not chat_request.query.strip():
             raise HTTPException(status_code=400, detail="Query cannot be empty")
         
         # 1. Re-escribir la pregunta con el historial
-        standalone_query = rephrase_query_with_history(request.query, request.history)
+        standalone_query = rephrase_query_with_history(chat_request.query, chat_request.history)
         print(f"Standalone query: {standalone_query}")
         
         # 2. Expandir la pregunta
